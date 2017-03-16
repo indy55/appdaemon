@@ -7,7 +7,7 @@ html {
 
 body {
 	margin:0;
-	background:transparent url(/custom_css/clear_sky/img/background_1.jpg) no-repeat 0 0 fixed;
+	background:transparent url(/css/clear_sky/img/background_1.jpg) no-repeat 0 0 fixed;
 	background-size:cover;
 	font-size:15px;
 	color:#fff;
