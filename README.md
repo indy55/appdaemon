@@ -40,20 +40,23 @@ $ sudo pip3 install .
 
 # Configuration
 
-When you have appdaemon installed by either method, copy the `conf/appdaemon.cfg.example` file to `conf/appdaemon.cfg`, then edit the `[AppDaemon]` section to reflect your environment:
+When you have appdaemon installed by either method, copy the `conf/appdaemon.yaml.example` file to `conf/appdaemon.yaml`, then edit the `AppDaemon` section to reflect your environment:
 
-```
-[AppDaemon]
-ha_url = <some_url>
-ha_key = <some key>
-logfile = STDOUT
-errorfile = STDERR
-threads = 10
-cert_path = <path/to/root/CA/cert>
+```yaml
+AppDaemon:
+  logfile: STDOUT
+  errorfile: STDERR
+  threads: 10
+  cert_path: <path/to/root/CA/cert>
+  cert_verify: True
+HASS:
+  ha_url: <some_url>
+  ha_key: <some key>
+
 # Apps
-[hello_world]
-module = hello
-class = HelloWorld
+hello_world:
+  module: hello
+  class: HelloWorld
 ```
 
 - `ha_url` is a reference to your home assistant installation and must include the correct port number and scheme (`http://` or `https://` as appropriate)
@@ -62,6 +65,7 @@ class = HelloWorld
 - `errorfile` (optional) is the name of the logfile for errors - this will usually be errors during compilation and execution of the apps. If `errorfile = STDERR` errors will be sent to stderr instead of a file, if not specified, output will be sent to STDERR.
 - `threads` - the number of dedicated worker threads to create for running the apps. Note, this will bear no resembelance to the number of apps you have, the threads are re-used and only active for as long as required to tun a particular callback or initialization, leave this set to 10 unless you experience thread starvation
 - `cert_path` (optional) - path to root CA cert directory - use only if you are using self signed certs.
+- `cert_verify` (optional) - flag for cert verification - set to `False` to disable verification on self signed certs.
 
 Optionally, you can place your apps in a directory other than under the config directory using the `app_dir` directive.
 
@@ -75,7 +79,7 @@ The `#Apps` section is the configuration for the Hello World program and should 
 
 ## Configuring the Dashboard
 
-Configuratiopn of the dashboard component (HADashboard) is described separately in the [Dashboard doc](DASHBOARD.md)
+Configuration of the dashboard component (HADashboard) is described separately in the [Dashboard doc](DASHBOARD.md)
 
 ## Docker
 
@@ -90,7 +94,7 @@ $ git ls-files
 configuration.yaml
 customize.yaml
 known_devices.yaml
-appdaemon.cfg
+appdaemon.yaml
 apps
 apps/magic.py
 ```
@@ -99,7 +103,7 @@ You can run Docker and point the conf volume to that directory.
 
 # Example Apps
 
-There are a number of example apps under conf/examples, and the `conf/examples.cfg` file gives sample parameters for them.
+There are a number of example apps under conf/examples, and the `conf/examples.yaml` file gives sample parameters for them.
 
 # Running
 
@@ -184,6 +188,39 @@ optional arguments:
 -D can be used to increase the debug level for internal AppDaemon operations as well as apps using the logging function.
 
 The -s, -i, -t and -s options are for the Time Travel feature and should only be used for testing. They are described in more detail in the API documentation. 
+
+# Legacy Configuration
+
+AppDaemon also currently supports a legacy `ini` style of configuration and it is shown here for backward compatibility. It is recommended that you move to the YAML format using the provided tool. When using the legacy configuration style, there are no `HASS` or `HADashboard` sections - the associated directives all go in the `AppDaemon` section.
+
+
+```ini
+[AppDaemon]
+ha_url = <some_url>
+ha_key = <some key>
+logfile = STDOUT
+errorfile = STDERR
+threads = 10
+cert_path = <path/to/root/CA/cert>
+cert_verify = True
+# Apps
+[hello_world]
+module = hello
+class = HelloWorld
+```
+
+If you want to move from the legacy `ini` style of configuration to YAML, AppDaemon is able to do this for you. From the command line run:
+
+```bash
+$ appdaemon -c CONFIG --convertcfg
+Converting /etc/appdaemon/appdaemon.cfg to /etc/appdaemon/appdaemon.yaml
+$
+```
+
+AppDaemon should correctly figure out where the file is to convert form your existing configuration. After conversion, the new YAML file will be used in preference to the old ini file, which can then be removed if desired.
+
+Note: any lines in the ini file that are commented out, whether actual comments of lines that are not active, will not be converted.
+Note 2: Docker users will unfortunately need to perform the conversion manually.
 
 # Starting At Reboot
 To run `AppDaemon` at reboot, I have provided a sample init script in the `./scripts` directory. These have been tested on a Raspberry PI - your mileage may vary on other systems. There is also a sample Systemd script.

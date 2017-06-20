@@ -81,10 +81,10 @@ To configure a new App you need a minimum of two directives:
 
 Although the section/App name must be unique, it is possible to re-use a class as many times as you want, and conversely to put as many classes in a module as you want. A sample definition for a new App might look as follows:
 
-```ini
-[newapp]
-module = new
-class = NewApp
+```yaml
+newapp:
+  module: new
+  class: NewApp
 ```
 
 When AppDaemon sees the following configuration it will expect to find a class called `NewApp` defined in a module called `new.py` in the apps subdirectory. Apps can be placed at the root of the Apps directory or within a subdirectory, an arbitrary depth down - wherever the App is, as long as it is in some subdirectory of the Apps dir, or in the Apps dir itself, AppDaemon will find it. There is no need to include information about the path, just the name of the file itself (without the `.py`) is sufficient. If names in the subdirectories overlap, AppDir will pick one of them but the exact choice it will make is undefined.
@@ -109,12 +109,12 @@ The suggested order for creating a new App is to add the module code first and w
 
 There wouldn't be much point in being able to run multiple versions of an App if there wasn't some way to instruct them to do something different. For this reason it is possible to pass any required arguments to an App, which are then made available to the object at runtime. The arguments themselves can be called anything (apart from `module` or `class`) and are simply added into the section after the 2 mandatory directives like so:
 
-```ini
-[MyApp]
-module = myapp
-class = MyApp
-param1 = spam
-param2 = eggs
+```yaml
+MyApp:
+  module: myapp
+  class: MyApp
+  param1: spam
+  param2: eggs
 ```
 
 Within the Apps code, the 2 parameters (as well as the module and class) are available as a dictionary called `args`, and accessed as follows:
@@ -126,23 +126,54 @@ param2 = self.args["param2"]
 
 A use case for this might be an App that detects motion and turns on a light. If you have 3 places you want to run this, rather than hardcoding this into 3 separate Apps, you need only code a single app and instantiate it 3 times with different arguments. It might look something like this:
 
-```ini
-[downstairs_motion_light]
-module = motion_light
-class = MotionLight
-sensor = binary_sensor.downstairs_hall
-light = light.downstairs_hall
-[upstairs_motion_light]
-module = motion_light
-class = MotionLight
-sensor = binary_sensor.upstairs_hall
-light = light.upstairs_hall
-[garage_motion_light]
-module = motion_light
-class = MotionLight
-sensor = binary_sensor.garage
-light = light.garage
+```yaml
+downstairs_motion_light:
+  module: motion_light
+  class: MotionLight
+  sensor: binary_sensor.downstairs_hall
+  light: light.downstairs_hall
+upstairs_motion_light:
+  module: motion_light
+  class: MotionLight
+  sensor: binary_sensor.upstairs_hall
+  light: light.upstairs_hall
+garage_motion_light:
+  module: motion_light
+  class: MotionLight
+  sensor: binary_sensor.garage
+  light: light.garage
 ```
+
+Apps can use arbitrarily complex structures within argumens, e.g.:
+
+```yaml
+entities:
+  - entity1
+  - entity2
+  - entity3
+```
+
+Which can be accessed as a list in python with:
+
+```python
+for entity in self.args.entities:
+  do some stuff
+```
+
+Also, this opens the door to really complex parameter structures if required:
+
+```python
+sensors:
+  sensor1:
+    type:thermometer
+    warning_level: 30
+    units: degrees
+  sensor2:
+    type:moisture
+    warning_level: 100
+    units: %
+```
+
 
 ## Module Dependencies
 
@@ -158,29 +189,29 @@ AppDaemon fully supports this through the use of the dependency directive in the
 
 For example, an App `Consumer`, uses another app `Sound` to play sound files. `Sound` in turn uses `Global` to store some global values. We can represent these dependencies as follows:
 
-```ini
-[Global]
-module = global
-class = Global
+```yaml
+Global:
+  module: global
+  class: Global
 
-[Sound]
-module = sound
-class = Sound
-dependencies = global # Note - module name not App name
+Sound
+  module: sound
+  class: Sound
+  dependencies: global # Note - module name not App name
 
-[Consumer]
-module = sound
-class = Sound
-dependencies = sound
+Consumer:
+  module: sound
+  class: Sound
+  dependencies: sound
 ```
 
 It is also possible to have multiple dependencies, added as a comma separate list (no spaces)
 
-```ini
-[Consumer]
-module = sound
-class = Sound
-dependencies = sound,global
+```yaml
+Consumer:
+  module: sound
+  class: Sound
+  dependencies: sound,global
 ```
 
 AppDaemon will write errors to the log if a dependency is missing and it should also detect circular dependencies.
@@ -193,11 +224,11 @@ Put simply, callback constraints are one or more conditions on callback executio
 
 For example, the presence callback constraint can be added to an App by adding a parameter to it's configuration like this:
 
-```ini
-[some_app]
-module = some_module
-class = SomeClass
-constrain_presence = noone
+```yaml
+some_app:
+  module: some_module
+  class: SomeClass
+  constrain_presence: noone
 ```
 
 Now, although the `initialize()` function will be called for SomeClass, and it will have a chance to register as many callbacks as it desires, none of the callbacks will execute, in this case, until everyone has left. This could be useful for an interior motion detector App for instance. There are several different types of constraints:
@@ -214,30 +245,30 @@ They are described individually below.
 ### input_boolean
 By default, the input_boolean constraint prevents callbacks unless the specified input_boolean is set to "on". This is useful to allow certain Apps to be turned on and off from the user interface. For example:
 
-```ini
-[some_app]
-module = some_module
-class = SomeClass
-constrain_input_boolean = input_boolean.enable_motion_detection
+```yaml
+some_app:
+  module: some_module
+  class: SomeClass
+  constrain_input_boolean: input_boolean.enable_motion_detection
 ```
 
 If you want to reverse the logic so the constraint is only called when the input_boolean is off, use the optional state parameter by appending ",off" to the argument, e.g.:
 
-```ini
-[some_app]
-module = some_module
-class = SomeClass
-constrain_input_boolean = input_boolean.enable_motion_detection,off
+```yaml
+some_app:
+  module: some_module
+  class: SomeClass
+  constrain_input_boolean: input_boolean.enable_motion_detection,off
 ```
 
 ### input_select
 The input_select constraint prevents callbacks unless the specified input_select is set to one or more of the nominated (comma separated) values. This is useful to allow certain Apps to be turned on and off according to some flag, e.g. a house mode flag.
 
-```ini
+```yaml
 # Single value
-constrain_input_select = input_select.house_mode,Day
+constrain_input_select: input_select.house_mode,Day
 # or multiple values
-constrain_input_select = input_select.house_mode,Day,Evening,Night
+constrain_input_select: input_select.house_mode,Day,Evening,Night
 ```
 
 ### presence
@@ -246,12 +277,12 @@ The presence constraint will constrain based on presence of device trackers. It 
 - `anyone` - only allow callback execution when one or more person is home
 - `everyone` - only allow callback execution when everyone is home
 
-```ini
-constrain_presence = anyone
+```yaml
+constrain_presence: anyone
 # or
-constrain_presence = someone
+constrain_presence: someone
 # or
-constrain_presence = noone
+constrain_presence: noone
 ```
 
 ### time
@@ -266,23 +297,23 @@ The times are specified in a string format with one of the following formats:
 
 The time based constraint system correctly interprets start and end times that span midnight.
 
-```ini
+```yaml
 # Run between 8am and 10pm
-constrain_start_time = 08:00:00
-constrain_end_time = 22:00:00
+constrain_start_time: 08:00:00
+constrain_end_time: 22:00:00
 # Run between sunrise and sunset
-constrain_start_time = sunrise
-constrain_end_time = sunset
+constrain_start_time: sunrise
+constrain_end_time: sunset
 # Run between 45 minutes before sunset and 45 minutes after sunrise the next day
-constrain_start_time = sunset - 00:45:00
-constrain_end_time = sunrise + 00:45:00
+constrain_start_time: sunset - 00:45:00
+constrain_end_time: sunrise + 00:45:00
 ```
 
 ### days
 The day constraint consists of as list of days for which the callbacks will fire, e.g.
 
-```ini
-constrain_days = mon,tue,wed
+```yaml
+constrain_days: mon,tue,wed
 ```
 
 Callback constraints can also be applied to individual callbacks within Apps, see later for more details.
@@ -316,7 +347,7 @@ In most cases, the attribute `state` has the most important value in it, e.g. fo
 #### Synopsis
 
 ```python
-get_state(entity = None, attribute = None)
+get_state(entity = None, attribute: None)
 ```
 
 `get_state()` is used to query the state of any component within Home Assistant. State updates are continuously tracked so this call runs locally and does not require AppDaemon to call back to Home Assistant and as such is very efficient.
@@ -345,7 +376,7 @@ The value `all` for attribute has special significance and will return the entir
 
 ```python
 # Return state for the entire system
-state = self.get_state()
+state: self.get_state()
 
 # Return state for all switches in the system
 state = self.get_state("switch")
@@ -626,6 +657,42 @@ The handle returned when the `listen_state()` call was made.
 ```python
 entity, attribute, kwargs = self.info_listen_state(self.handle)
 ```
+
+## Publishing State from an App
+
+Using AppDaemon it is possible to explicitly publish state from an App. The published state can contain whatever you want, and is treated exactly like any other HA state, e.g. to the rest of AppDaemon, and the dashboard it looks like an entity. This means that you can listen for state changes in other apps and also publish arbitary state to the dashboard via use of specific entity IDs. To publish state, you will use `set_ha_state()`. State can be retrieved and listened for with the usual AppDaemon calls.
+
+### set_app_state()
+
+Publish state information to AppDaemon's internal state and push the statechanges out to listening Apps and Dashboards.
+
+#### Synopsis
+
+```python
+self.set_app_state(entity_id, state)
+```
+
+#### Returns
+
+None.
+
+#### Parameters
+
+##### entity_id
+
+A name for the new state. It must conform to the standard entity_id format, e.g. `<device_type>.<name>`. however device type and name can be whatever you like as long as you ensure it doesn't conflict with any real devices. For clarity, I suggest the convention of using `appdaemon` as the device type. A single App can publish to as many entity ids as desired.
+
+##### state
+
+The state to be associated with the entity id. This is a dictionary and must contain the enirety of the state information, It will replace the old state information, and calls like `listen_state()` should work correctly reporting the old and the new state information as long as you keep the dictionary looking similar to HA status updates, e.g. the main state in a state field, and any attibutes in an attributes sub-dictionary.
+
+#### Examples
+
+```python
+self.set_app_state("appdaemon.alerts", {"state": number, "attributes": {"unit_of_measurement": ""}})
+```
+
+This is an example of a state update that can be used with a sensor widget in HADashboard. "state" is the actual value, and the widget also expects an attribute called "unit_of_measurement" to work correctly.
 
 ## Scheduler
 
@@ -1051,7 +1118,7 @@ Run a callback at or around sunset.
 #### Synopsis
 
 ```python
-self.handle = self.run_at_sunset(callback, offset, **kwargs)
+self.handle = self.run_at_sunset(callback, **kwargs)
 ```
 
 #### Returns
@@ -1078,9 +1145,9 @@ Arbitary keyword parameters to be provided to the callback function when it is i
 # Example using timedelta
 import datetime
 ...
-self.run_at_sunset(self.sun, datetime.timedelta(minutes = -45).total_seconds(), "Sunset -45 mins")
+self.run_at_sunset(self.sun, offset = datetime.timedelta(minutes = -45).total_seconds(), "Sunset -45 mins")
 # or you can just do the math yourself
-self.run_at_sunset(self.sun, 30 * 60, "Sunset +30 mins")
+self.run_at_sunset(self.sun, offset = 30 * 60, "Sunset +30 mins")
 # Run at a random time +/- 60 minutes from sunset
 self.run_at_sunset(self.sun, random_start = -60*60, random_end = 60*60, "Sunset, random +/- 60 mins")
 # Run at a random time between 30 and 60 minutes before sunset
@@ -2111,12 +2178,12 @@ self.log("My current position is {}(Lat), {}(Long)".format(self.ha_config["latit
 
 And finally, it is also possible to use the AppDaemon as a global area for sharing parameters across Apps. Simply add the required parameters to the AppDaemon section of your config:
 
-```ini
-[AppDaemon]
-ha_url = <some url>
-ha_key = <some key>
+```yaml
+AppDaemon:
+ha_url: <some url>
+ha_key: <some key>
 ...
-global_var = hello world
+global_var: hello world
 ```
 
 Then access it as follows:

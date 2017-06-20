@@ -28,9 +28,11 @@ import appdaemon.appdash as appdash
 import asyncio
 import concurrent
 from urllib.parse import urlparse
+import yaml
+import random
 
 
-__version__ = "2.0.0beta3.5"
+__version__ = "2.0.0beta4"
 
 # Windows does not have Daemonize package so disallow
 
@@ -46,7 +48,6 @@ was_dst = None
 last_state = None
 reading_messages = False
 inits = {}
-stopping = False
 ws = None
 
 
@@ -115,27 +116,8 @@ def is_dst():
     return bool(time.localtime(ha.get_now_ts()).tm_isdst)
 
 
-def do_every(period, f):
-    def g_tick():
-        t_ = math.floor(time.time())
-        count = 0
-        while True:
-            count += 1
-            yield max(t_ + count * period - time.time(), 0)
-
-    g = g_tick()
-    t = math.floor(ha.get_now_ts())
-    while True:
-        time.sleep(next(g))
-        t += conf.interval
-        r = f(t)
-        if r is not None and r != t:
-            t = math.floor(r)
-
-
 # noinspection PyUnusedLocal
 def handle_sig(signum, frame):
-    global stopping
     global ws
     if signum == signal.SIGUSR1:
         dump_schedule()
@@ -146,8 +128,11 @@ def handle_sig(signum, frame):
     if signum == signal.SIGHUP:
         read_apps(True)
     if signum == signal.SIGINT:
-        ha.log(conf.logger, "INFO", "AppDaemon is shutting down")
-        stopping = True
+        ha.log(conf.logger, "INFO", "Keyboard interrupt")
+        conf.stopping = True
+        if ws is not None:
+            ws.close()
+        conf.appq.put_nowait({"event_type": "ha_stop", "data": None})
 
 def dump_sun():
     ha.log(conf.logger, "INFO", "--------------------------------------------------")
@@ -380,6 +365,23 @@ def exec_schedule(name, entry, args):
 
         del conf.schedule[name][entry]
 
+@asyncio.coroutine
+def do_every(period, f):
+    t = math.floor(ha.get_now_ts())
+    count = 0
+    #t_ = math.floor(time.time())
+    while not conf.stopping:
+        count += 1
+        #delay = max(t_ + count * period - time.time(), 0)
+        delay = max(t + period - time.time(), 0)
+        #print(delay)
+        yield from asyncio.sleep(delay)
+        t += conf.interval
+        r = yield from f(t)
+        #print(t, r)
+        if r is not None and r != t:
+            t = math.floor(r)
+
 
 # noinspection PyBroadException,PyBroadException
 def do_every_second(utc):
@@ -391,8 +393,6 @@ def do_every_second(utc):
         return
     try:
 
-        # now = datetime.datetime.now()
-        # now = now.replace(microsecond=0)
         now = datetime.datetime.fromtimestamp(utc)
         conf.now = utc
 
@@ -425,28 +425,36 @@ def do_every_second(utc):
             )
             # dump_schedule()
             ha.log(conf.logger, "INFO", "-" * 40)
-            read_apps(True)
+            completed, pending = yield from asyncio.wait([conf.loop.run_in_executor(conf.executor, read_apps, True)])
+            #read_apps(True)
             # dump_schedule()
         was_dst = now_dst
 
         # dump_schedule()
 
+        # test code for clock skew
+        #if random.randint(1, 10) == 5:
+        #    time.sleep(random.randint(1,20))
+
         # Check to see if any apps have changed but only if we have valid state
 
         if last_state is not None:
-            read_apps()
+            completed, pending = yield from asyncio.wait([conf.loop.run_in_executor(conf.executor, read_apps)])
+            #read_apps()
 
         # Check to see if config has changed
 
-        check_config()
+        completed, pending = yield from asyncio.wait([conf.loop.run_in_executor(conf.executor, check_config)])
+        #check_config()
 
         # Call me suspicious, but lets update state form HA periodically
         # in case we miss events for whatever reason
         # Every 10 minutes seems like a good place to start
 
-        if last_state is not None and now - last_state > datetime.timedelta(minutes=10):
+        if last_state is not None and now - last_state > datetime.timedelta(minutes=10) and conf.ha_url is not None:
             try:
-                get_ha_state()
+                completed, pending = yield from asyncio.wait([conf.loop.run_in_executor(conf.executor, get_ha_state)])
+                #get_ha_state()
                 last_state = now
             except:
                 ha.log(conf.logger, "WARNING", "Unexpected error refreshing HA state - retrying in 10 minutes")
@@ -490,10 +498,6 @@ def do_every_second(utc):
                 conf.logger, "WARNING",
                 "Logged an error to {}".format(conf.errorfile)
             )
-
-
-def timer_thread():
-    do_every(conf.tick, do_every_second)
 
 
 # noinspection PyBroadException
@@ -794,13 +798,37 @@ def check_config():
     global config_file_modified
     global config
 
+    new_config = None
     try:
         modified = os.path.getmtime(config_file)
         if modified > config_file_modified:
             ha.log(conf.logger, "INFO", "{} modified".format(config_file))
             config_file_modified = modified
-            new_config = configparser.ConfigParser()
-            new_config.read_file(open(config_file))
+            root, ext = os.path.splitext(config_file)
+            if ext == ".yaml":
+                with open(config_file, 'r') as yamlfd:
+                    config_file_contents = yamlfd.read()
+                try:
+                    new_config = yaml.load(config_file_contents)
+                except yaml.YAMLError as exc:
+                    print(conf.dash, "WARNING", "Error loading configuration")
+                    if hasattr(exc, 'problem_mark'):
+                        if exc.context is not None:
+                            ha.log(conf.dash, "WARNING", "parser says")
+                            ha.log(conf.dash, "WARNING", str(exc.problem_mark))
+                            ha.log(conf.dash, "WARNING", str(exc.problem) + " " + str(exc.context))
+                        else:
+                            ha.log(conf.dash, "WARNING", "parser says")
+                            ha.log(conf.dash, "WARNING", str(exc.problem_mark))
+                            ha.log(conf.dash, "WARNING", str(exc.problem))
+            else:
+                new_config = configparser.ConfigParser()
+                new_config.read_file(open(config_file))
+
+            if new_config is None:
+                ha.log(conf.dash, "WARNING", "New config not applied")
+                return
+
 
             # Check for changes
 
@@ -886,7 +914,7 @@ def read_app(file, reload=False):
         # Instantiate class and Run initialize() function
 
         for name in config:
-            if name == "DEFAULT" or name == "AppDaemon":
+            if name == "DEFAULT" or name == "AppDaemon" or name == "HASS" or name == "HADashboard":
                 continue
             if module_name == config[name]["module"]:
                 class_name = config[name]["class"]
@@ -1090,10 +1118,12 @@ def run():
     global was_dst
     global last_state
     global reading_messages
-    global stopping
+
+    conf.appq = asyncio.Queue(maxsize=0)
+
     first_time = True
 
-    stopping = False
+    conf.stopping = False
 
     ha.log(conf.logger, "DEBUG", "Entering run()")
 
@@ -1111,6 +1141,9 @@ def run():
 
     update_sun()
 
+    conf.executor = concurrent.futures.ThreadPoolExecutor(max_workers=5)
+    tasks = []
+
     if conf.apps is True:
         ha.log(conf.logger, "DEBUG", "Creating worker threads ...")
 
@@ -1122,75 +1155,100 @@ def run():
 
             ha.log(conf.logger, "DEBUG", "Done")
 
-    conf.executor = concurrent.futures.ThreadPoolExecutor(
-        max_workers=3,
-    )
 
-    # Read apps and get HA State before we start the timer thread
-    ha.log(conf.logger, "DEBUG", "Calling HA for initial state")
+    if conf.ha_url is not None:
+        # Read apps and get HA State before we start the timer thread
+        ha.log(conf.logger, "DEBUG", "Calling HA for initial state")
 
-    while last_state is None:
-        try:
-            get_ha_state()
-            last_state = ha.get_now()
-        except:
-            ha.log(
-                conf.logger, "WARNING",
-                "Disconnected from Home Assistant, retrying in 5 seconds"
-            )
-            if conf.loglevel == "DEBUG":
-                ha.log(conf.logger, "WARNING", '-' * 60)
-                ha.log(conf.logger, "WARNING", "Unexpected error:")
-                ha.log(conf.logger, "WARNING", '-' * 60)
-                ha.log(conf.logger, "WARNING", traceback.format_exc())
-                ha.log(conf.logger, "WARNING", '-' * 60)
-            time.sleep(5)
+        while last_state is None:
+            try:
+                get_ha_state()
+                last_state = ha.get_now()
+            except:
+                ha.log(
+                    conf.logger, "WARNING",
+                    "Disconnected from Home Assistant, retrying in 5 seconds"
+                )
+                if conf.loglevel == "DEBUG":
+                    ha.log(conf.logger, "WARNING", '-' * 60)
+                    ha.log(conf.logger, "WARNING", "Unexpected error:")
+                    ha.log(conf.logger, "WARNING", '-' * 60)
+                    ha.log(conf.logger, "WARNING", traceback.format_exc())
+                    ha.log(conf.logger, "WARNING", '-' * 60)
+                time.sleep(5)
 
-    ha.log(conf.logger, "INFO", "Got initial state")
-    # Load apps
+        ha.log(conf.logger, "INFO", "Got initial state")
+
+        # Initialize appdaemon loop
+        tasks.append(asyncio.async(appdaemon_loop()))
+
+    else:
+       last_state = ha.get_now()
 
     if conf.apps is True:
+        # Load apps
+
         ha.log(conf.logger, "DEBUG", "Reading Apps")
 
         read_apps(True)
 
         ha.log(conf.logger, "INFO", "App initialization complete")
 
-        # Create timer thread
+
+        # Create timer loop
 
         # First, update "now" for less chance of clock skew error
         if conf.realtime:
             conf.now = datetime.datetime.now().timestamp()
 
-            ha.log(conf.logger, "DEBUG", "Starting timer thread")
+            ha.log(conf.logger, "DEBUG", "Starting timer loop")
 
-            t = threading.Thread(target=timer_thread)
-            t.daemon = True
-            t.start()
-
+            tasks.append(asyncio.async(do_every(conf.tick, do_every_second)))
+            tasks.append(asyncio.async(appstate_loop()))
 
         reading_messages = True
+
+    else:
+        ha.log(conf.logger, "INFO", "Apps are disabled")
+
 
     # Initialize Dashboard
 
     if conf.dashboard is True:
         ha.log(conf.logger, "INFO", "Starting dashboard")
+        #tasks.append(appdash.run_dash(conf.loop))
         appdash.run_dash(conf.loop)
+    else:
+        ha.log(conf.logger, "INFO", "Dashboards are disabled")
 
-    asyncio.async(appdaemon_loop())
-    conf.loop.run_forever()
+    conf.loop.run_until_complete(asyncio.wait(tasks))
+
+    while not conf.stopping:
+        asyncio.sleep(1)
+
+
+    ha.log(conf.logger, "INFO", "AppDeamon Exited")
+
+
+@asyncio.coroutine
+def appstate_loop():
+    while not conf.stopping:
+        args = yield from conf.appq.get()
+        process_message(args)
+        conf.appq.task_done()
+
 
 @asyncio.coroutine
 def appdaemon_loop():
     first_time = True
     global reading_messages
-    global stopping
+    global ws
 
-    stopping = False
+    conf.stopping = False
 
     _id = 0
 
-    while not stopping:
+    while not conf.stopping:
         _id += 1
         try:
             if first_time is False:
@@ -1202,7 +1260,6 @@ def appdaemon_loop():
                 # Let the timer thread know we are in business,
                 # and give it time to tick at least once
                 reading_messages = True
-                time.sleep(2)
 
                 # Load apps
                 read_apps(True)
@@ -1215,7 +1272,8 @@ def appdaemon_loop():
             if first_time is True:
                 process_event({"event_type": "appd_started", "data": {}})
                 first_time = False
-            else:
+            elif conf.ha_url is not None:
+
                 process_event({"event_type": "ha_started", "data": {}})
 
             if conf.version < parse_version('0.34') or conf.commtype == "SSE":
@@ -1308,7 +1366,7 @@ def appdaemon_loop():
                 # Loop forever consuming events
                 #
 
-                while not stopping:
+                while not conf.stopping:
                     completed, pending = yield from asyncio.wait([conf.loop.run_in_executor(conf.executor, ws.recv)])
                     result = json.loads(list(completed)[0].result())
 
@@ -1327,7 +1385,7 @@ def appdaemon_loop():
 
         except:
             reading_messages = False
-            if not stopping:
+            if not conf.stopping:
                 ha.log(
                     conf.logger, "WARNING",
                     "Disconnected from Home Assistant, retrying in 5 seconds"
@@ -1340,9 +1398,7 @@ def appdaemon_loop():
                     ha.log(conf.logger, "WARNING", '-' * 60)
                 time.sleep(5)
 
-    ha.log(conf.logger, "INFO", "Disconnected from Home Assistant")
-    ha.log(conf.logger, "INFO", "Waiting for loop ...")
-    sys.exit(0)
+        ha.log(conf.logger, "INFO", "Disconnecting from Home Assistant")
 
 
 def find_path(name):
@@ -1351,10 +1407,7 @@ def find_path(name):
         _file = os.path.join(path, name)
         if os.path.isfile(_file) or os.path.isdir(_file):
             return _file
-    raise ValueError(
-        "{} not specified and not found in default locations".format(name)
-    )
-
+    return None
 
 
 # noinspection PyBroadException
@@ -1393,6 +1446,7 @@ def main():
                             "WEBSOCKETS"
                         ])
     parser.add_argument('--profiledash', help=argparse.SUPPRESS, action='store_true')
+    parser.add_argument('--convertcfg', help="Convert existing .cfg file to yaml", action='store_true')
 
     # Windows does not have Daemonize package so disallow
     if platform.system() != "Windows":
@@ -1420,54 +1474,137 @@ def main():
 
     conf.commtype = args.commtype
 
-    if config_dir is None:
-        config_file = find_path("appdaemon.cfg")
-    else:
-        config_file = os.path.join(config_dir, "appdaemon.cfg")
-
     if platform.system() != "Windows":
         isdaemon = args.daemon
     else:
         isdaemon = False
 
-    # Read Config File
 
-    config = configparser.ConfigParser()
-    config.read_file(open(config_file))
+    if config_dir is None:
+        config_file_conf = find_path("appdaemon.cfg")
+        config_file_yaml = find_path("appdaemon.yaml")
+    else:
+        config_file_conf = os.path.join(config_dir, "appdaemon.cfg")
+        if not os.path.isfile(config_file_conf):
+            config_file_conf = None
+        config_file_yaml = os.path.join(config_dir, "appdaemon.yaml")
+        if not os.path.isfile(config_file_yaml):
+            config_file_yaml = None
+
+    config = None
+    config_from_yaml = False
+
+    if config_file_yaml is not None and args.convertcfg is False:
+        config_from_yaml = True
+        config_file = config_file_yaml
+        with open(config_file_yaml, 'r') as yamlfd:
+            config_file_contents = yamlfd.read()
+        try:
+            config = yaml.load(config_file_contents)
+        except yaml.YAMLError as exc:
+            print("ERROR", "Error loading configuration")
+            if hasattr(exc, 'problem_mark'):
+                if exc.context is not None:
+                    print("ERROR", "parser says")
+                    print("ERROR", str(exc.problem_mark))
+                    print("ERROR", str(exc.problem) + " " + str(exc.context))
+                else:
+                    print("ERROR", "parser says")
+                    print("ERROR", str(exc.problem_mark))
+                    print("ERROR", str(exc.problem))
+            sys.exit()
+    else:
+
+        # Read Config File
+        config_file = config_file_conf
+        config = configparser.ConfigParser()
+        config.read_file(open(config_file_conf))
+
+        if args.convertcfg is True:
+            yaml_file = os.path.join(os.path.dirname(config_file_conf), "appdaemon.yaml")
+            print("Converting {} to {}".format(config_file_conf, yaml_file))
+            new_config = {}
+            for section in config:
+                if section != "DEFAULT":
+                    if section == "AppDaemon":
+                        new_config["AppDaemon"] = {}
+                        new_config["HADashboard"] = {}
+                        new_config["HASS"] = {}
+                        new_section = ""
+                        for var in config[section]:
+                            if var in ("dash_compile_on_start", "dash_dir", "dash_force_compile", "dash_url"):
+                                new_section = "HADashboard"
+                            elif var in ("ha_key", "ha_url", "timeout"):
+                                new_section = "HASS"
+                            else:
+                                new_section = "AppDaemon"
+                            new_config[new_section][var] = config[section][var]
+                    else:
+                        new_config[section] = {}
+                        for var in config[section]:
+                            new_config[section][var] = config[section][var]
+            with open(yaml_file, "w") as outfile:
+                yaml.dump(new_config, outfile, default_flow_style=False)
+            sys.exit()
+
 
     conf.config_dir = os.path.dirname(config_file)
-
-    assert "AppDaemon" in config, "[AppDaemon] section required in {}".format(
-        config_file
-    )
-
     conf.config = config
-    conf.ha_url = config['AppDaemon']['ha_url']
-    conf.ha_key = config['AppDaemon'].get('ha_key', "")
     conf.logfile = config['AppDaemon'].get("logfile")
     conf.errorfile = config['AppDaemon'].get("errorfile")
-    conf.app_dir = config['AppDaemon'].get("app_dir")
     conf.threads = int(config['AppDaemon'].get('threads'))
     conf.certpath = config['AppDaemon'].get("cert_path")
-    conf.dash_url = config['AppDaemon'].get("dash_url")
     conf.app_dir = config['AppDaemon'].get("app_dir")
-    conf.dashboard_dir = config['AppDaemon'].get("dash_dir")
-    conf.timeout = config['AppDaemon'].get("timeout")
+    conf.latitude = config['AppDaemon'].get("latitude")
+    conf.longitude = config['AppDaemon'].get("longitude")
+    conf.elevation = config['AppDaemon'].get("elevation")
+    conf.time_zone = config['AppDaemon'].get("time_zone")
+    conf.rss_feeds = config['AppDaemon'].get("rss_feeds")
+    conf.rss_update = config['AppDaemon'].get("rss_update")
+
+    if config_from_yaml is True:
+
+        conf.timeout = config['HASS'].get("timeout")
+        conf.ha_url = config['HASS'].get('ha_url')
+        conf.ha_key = config['HASS'].get('ha_key', "")
+        conf.dash_url = config['HADashboard'].get("dash_url")
+        conf.dashboard_dir = config['HADashboard'].get("dash_dir")
+
+        if config['HADashboard'].get("dash_force_compile") == "1":
+            conf.dash_force_compile = True
+        else:
+            conf.dash_force_compile = False
+
+        if config['HADashboard'].get("dash_compile_on_start") == "1":
+            conf.dash_compile_on_start = True
+        else:
+            conf.dash_compile_on_start = False
+    else:
+        conf.timeout = config['AppDaemon'].get("timeout")
+        conf.ha_url = config['AppDaemon'].get('ha_url')
+        conf.ha_key = config['AppDaemon'].get('ha_key', "")
+        conf.dash_url = config['AppDaemon'].get("dash_url")
+        conf.dashboard_dir = config['AppDaemon'].get("dash_dir")
+
+        if config['AppDaemon'].get("dash_force_compile") == "1":
+            conf.dash_force_compile = True
+        else:
+            conf.dash_force_compile = False
+
+        if config['AppDaemon'].get("dash_compile_on_start") == "1":
+            conf.dash_compile_on_start = True
+        else:
+            conf.dash_compile_on_start = False
+
+
 
     if config['AppDaemon'].get("disable_apps") == "1":
         conf.apps = False
     else:
         conf.apps = True
 
-    if config['AppDaemon'].get("dash_force_compile") == "1":
-        conf.dash_force_compile = True
-    else:
-        conf.dash_force_compile = False
-
-    if config['AppDaemon'].get("dash_compile_on_start") == "1":
-        conf.dash_compile_on_start = True
-    else:
-        conf.dash_compile_on_start = False
+    if config['AppDaemon'].get("cert_verify", True) == False:
+        conf.certpath = False
 
     if conf.dash_url is not None:
         conf.dashboard = True
@@ -1564,57 +1701,56 @@ def main():
     # Startup message
 
     ha.log(conf.logger, "INFO", "AppDaemon Version {} starting".format(__version__))
-
-    if not conf.apps:
-        ha.log(conf.logger, "INFO", "Apps are disabled")
+    ha.log(conf.logger, "INFO", "Configuration read from: {}".format(config_file))
 
     # Check with HA to get various info
 
     ha_config = None
-    while ha_config is None:
-        try:
-            ha_config = ha.get_ha_config()
-        except:
-            ha.log(
-                conf.logger, "WARNING", "Unable to connect to Home Assistant, retrying in 5 seconds")
-            if conf.loglevel == "DEBUG":
-                ha.log(conf.logger, "WARNING", '-' * 60)
-                ha.log(conf.logger, "WARNING", "Unexpected error:")
-                ha.log(conf.logger, "WARNING", '-' * 60)
-                ha.log(conf.logger, "WARNING", traceback.format_exc())
-                ha.log(conf.logger, "WARNING", '-' * 60)
-        time.sleep(5)
+    if conf.ha_url is not None:
+        while ha_config is None:
+            try:
+                ha_config = ha.get_ha_config()
+            except:
+                ha.log(
+                    conf.logger, "WARNING", "Unable to connect to Home Assistant, retrying in 5 seconds")
+                if conf.loglevel == "DEBUG":
+                    ha.log(conf.logger, "WARNING", '-' * 60)
+                    ha.log(conf.logger, "WARNING", "Unexpected error:")
+                    ha.log(conf.logger, "WARNING", '-' * 60)
+                    ha.log(conf.logger, "WARNING", traceback.format_exc())
+                    ha.log(conf.logger, "WARNING", '-' * 60)
+                time.sleep(5)
 
-    conf.version = parse_version(ha_config["version"])
+        conf.version = parse_version(ha_config["version"])
 
-    conf.ha_config = ha_config
+        conf.ha_config = ha_config
 
-    conf.latitude = ha_config["latitude"]
-    conf.longitude = ha_config["longitude"]
-    conf.time_zone = ha_config["time_zone"]
+        conf.latitude = ha_config["latitude"]
+        conf.longitude = ha_config["longitude"]
+        conf.time_zone = ha_config["time_zone"]
 
-    if "elevation" in ha_config:
-        conf.elevation = ha_config["elevation"]
-        if "elevation" in config['AppDaemon']:
-            ha.log(conf.logger, "WARNING",  "'elevation' directive is deprecated, please remove")
-    else:
-        conf.elevation = config['AppDaemon']["elevation"]
+        if "elevation" in ha_config:
+            conf.elevation = ha_config["elevation"]
+            if "elevation" in config['AppDaemon']:
+                ha.log(conf.logger, "WARNING",  "'elevation' directive is deprecated, please remove")
+        else:
+            conf.elevation = config['AppDaemon']["elevation"]
 
     # Use the supplied timezone
     os.environ['TZ'] = conf.time_zone
 
     # Now we have logging, warn about deprecated directives
-    if "latitude" in config['AppDaemon']:
-        ha.log(conf.logger, "WARNING", "'latitude' directive is deprecated, please remove")
+    #if "latitude" in config['AppDaemon']:
+    #    ha.log(conf.logger, "WARNING", "'latitude' directive is deprecated, please remove")
 
-    if "longitude" in config['AppDaemon']:
-        ha.log(conf.logger, "WARNING", "'longitude' directive is deprecated, please remove")
+    #if "longitude" in config['AppDaemon']:
+    #    ha.log(conf.logger, "WARNING", "'longitude' directive is deprecated, please remove")
 
-    if "timezone" in config['AppDaemon']:
-        ha.log(conf.logger, "WARNING", "'timezone' directive is deprecated, please remove")
+    #if "timezone" in config['AppDaemon']:
+    #    ha.log(conf.logger, "WARNING", "'timezone' directive is deprecated, please remove")
 
-    if "time_zone" in config['AppDaemon']:
-        ha.log(conf.logger, "WARNING", "'time_zone' directive is deprecated, please remove")
+    #if "time_zone" in config['AppDaemon']:
+    #    ha.log(conf.logger, "WARNING", "'time_zone' directive is deprecated, please remove")
 
     init_sun()
 
@@ -1640,7 +1776,7 @@ def main():
             else:
                 conf.dashboard_dir = os.path.join(config_dir, "dashboards")
 
-                #
+        #
         # Figure out where our data files are
         #
         conf.dash_dir = os.path.dirname(__file__)

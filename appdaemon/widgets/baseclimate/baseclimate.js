@@ -58,13 +58,14 @@ function baseclimate(widget_id, url, skin, parameters)
         self.min = state.attributes.min_temp
         self.max = state.attributes.max_temp
         self.step = 1
-        self.level = state.attributes.current_temperature
+        self.level = state.attributes.temperature
         self.set_field(self, "unit", state.attributes.unit_of_measurement)
         set_view(self, state)
     }
 
     function OnStateUpdate(self, state)
     {
+        self.level = state.attributes.temperature
         set_view(self, state)
     }
 

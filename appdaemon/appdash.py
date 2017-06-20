@@ -6,6 +6,9 @@ import jinja2
 import json
 import os
 import traceback
+import re
+import feedparser
+import time
 
 import appdaemon.homeassistant as ha
 import appdaemon.conf as conf
@@ -15,7 +18,6 @@ import appdaemon.dashboard as dashboard
 
 app = web.Application()
 app['websockets'] = {}
-
 
 def set_paths():
     if not os.path.exists(conf.compile_dir):
@@ -45,7 +47,8 @@ def set_paths():
 @asyncio.coroutine
 @aiohttp_jinja2.template('dashboard.jinja2')
 def list_dash(request):
-    dash_list = dashboard.list_dashes()
+    completed, pending = yield from asyncio.wait([conf.loop.run_in_executor(conf.executor, dashboard.list_dashes)])
+    dash_list = list(completed)[0].result()
     params = {"dash_list": dash_list, "stream_url": conf.stream_url}
     params["main"] = "1"
     return params
@@ -116,11 +119,34 @@ def _load_dash(request):
 
     except:
         ha.log(conf.dash, "WARNING", '-' * 60)
-        ha.log(conf.dash, "WARNING", "Unexpected error in CSS file")
+        ha.log(conf.dash, "WARNING", "Unexpected error during DASH creation")
         ha.log(conf.dash, "WARNING", '-' * 60)
         ha.log(conf.dash, "WARNING", traceback.format_exc())
         ha.log(conf.dash, "WARNING", '-' * 60)
         return {"errors": ["An unrecoverable error occured fetching dashboard"]}
+
+@asyncio.coroutine
+def update_rss(loop):
+    # Grab RSS Feeds
+
+    if conf.rss_feeds is not None and conf.rss_update is not None:
+        while not conf.stopping:
+            if conf.rss_last_update == None or (conf.rss_last_update + conf.rss_update) <= time.time():
+                conf.rss_last_update = time.time()
+
+                for feed_data in conf.rss_feeds:
+                    completed, pending = yield from asyncio.wait(
+                        [conf.loop.run_in_executor(conf.executor, feedparser.parse, feed_data["feed"])])
+                    feed = list(completed)[0].result()
+
+                    new_state = {"feed": feed}
+                    with conf.ha_state_lock:
+                        conf.ha_state[feed_data["target"]] = new_state
+
+                    data = {"event_type": "state_changed", "data": {"entity_id": feed_data["target"], "new_state": new_state}}
+                    ws_update(data)
+
+            yield from asyncio.sleep(1)
 
 
 @asyncio.coroutine
@@ -139,12 +165,30 @@ def get_state(request):
 @asyncio.coroutine
 def call_service(request):
     data = yield from request.post()
-    print(data)
-    # Should be using aiohttp client here
-    # Will fix when I fully convert to async
-    ha.call_service(**data)
-    return web.Response(status=200)
+    args = {}
+    service = data["service"]
+    for key in data:
+        if key == "service":
+            pass
+        elif key == "rgb_color":
+            m = re.search('\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)', data[key])
+            if m:
+                r = m.group(1)
+                g = m.group(2)
+                b = m.group(3)
+                args["rgb_color"] = [r, g, b]
+        elif key == "xy_color":
+            m = re.search('\s*(\d+\.\d+)\s*,\s*(\d+\.\d+)', data[key])
+            if m:
+                x = m.group(1)
+                y = m.group(2)
+                args["xy_color"] = [x, y]
+        else:
+            args[key] = data[key]
 
+    #completed, pending = yield from asyncio.wait([conf.loop.run_in_executor(conf.executor, ha.call_service, data)])
+    ha.call_service(service, **args)
+    return web.Response(status=200)
 
 # noinspection PyUnusedLocal
 @asyncio.coroutine
@@ -174,34 +218,32 @@ def wshandler(request):
             if msg.type == aiohttp.WSMsgType.TEXT:
                 ha.log(conf.dash, "INFO",
                        "New dashboard connected: {}".format(msg.data))
-                with conf.ws_lock:
-                    request.app['websockets'][ws]["dashboard"] = msg.data
+                request.app['websockets'][ws]["dashboard"] = msg.data
             elif msg.type == aiohttp.WSMsgType.ERROR:
                 ha.log(conf.dash, "INFO",
                        "ws connection closed with exception {}".format(ws.exception()))
     except:
         ha.log(conf.dash, "INFO", "Dashboard disconnected")
     finally:
-        with conf.ws_lock:
-            request.app['websockets'].pop(ws, None)
+        request.app['websockets'].pop(ws, None)
 
     return ws
 
 
-def ws_update(data):
-    with conf.ws_lock:
-        ha.log(conf.dash,
-               "DEBUG",
-               "Sending data to {} dashes: {}".format(len(app['websockets']),
-                                                      data))
+def ws_update(jdata):
+    ha.log(conf.dash,
+           "DEBUG",
+           "Sending data to {} dashes: {}".format(len(app['websockets']), jdata))
 
-        for ws in app['websockets']:
+    data = json.dumps(jdata)
 
-            if "dashboard" in app['websockets'][ws]:
-                ha.log(conf.dash,
-                       "DEBUG",
-                       "Found dashboard type {}".format(app['websockets'][ws]["dashboard"]))
-                ws.send_str(json.dumps(data))
+    for ws in app['websockets']:
+
+        if "dashboard" in app['websockets'][ws]:
+            ha.log(conf.dash,
+                   "DEBUG",
+                   "Found dashboard type {}".format(app['websockets'][ws]["dashboard"]))
+            ws.send_str(data)
 
 
 # Routes, Status and Templates
@@ -251,17 +293,18 @@ def run_dash(loop):
 
         handler = app.make_handler()
         f = loop.create_server(handler, conf.dash_host, int(conf.dash_port))
-        srv = loop.run_until_complete(f)
+        conf.srv = loop.run_until_complete(f)
+        conf.rss = loop.run_until_complete(update_rss(loop))
         ha.log(conf.dash, "INFO", "HADashboard Started")
         ha.log(conf.dash, "INFO",
-               "Listening on {}".format(srv.sockets[0].getsockname()))
+               "Listening on {}".format(conf.srv.sockets[0].getsockname()))
         #try:
         #    loop.run_forever()
         #except KeyboardInterrupt:
         #    pass
         #finally:
-        #   srv.close()
-        #    loop.run_until_complete(srv.wait_closed())
+        #   conf.srv.close()
+        #    loop.run_until_complete(conf.srv.wait_closed())
         #    loop.run_until_complete(app.shutdown())
         #    loop.run_until_complete(handler.shutdown(60.0))
         #    loop.run_until_complete(app.cleanup())

@@ -10,14 +10,18 @@ HADashboard is dependent upon AppDaemon. As a first step please refer to the [Ap
 
 When you have AppDaemon installed and running, configuration of the Dashboard is pretty simple. You just need to add a directive to the config file - `dash_url`.
 
-This and the optional `dash_dir` directive should be in the top of the file under the `[AppDaemon]` section, ahead of any of the App definitions or they won't be recognized and the dashboard piece of AppDaemon will not start.
+This and the optional `dash_dir` directive should be in the top of the file under a new `HADashboard:` section.
 
 - `dash_url` - the url you want the dashboard service to listen on
 
 For instance:
 
-```ini
-dash_url = http://192.168.1.20:5050
+```yaml
+AppDaemon:
+  ha_url: <some_url>
+  ...
+HADashboard:
+  dash_url = http://192.168.1.20:5050
 ```
 
 Note that at this time only http is supported.
@@ -26,8 +30,9 @@ By default, dashboards are searched for under the config directory in a sub dire
 
 e.g.:
 
-```ini
-dash_dir = /etc/appdaemon/dashboards
+```yaml
+HADashboard:
+dash_dir: /etc/appdaemon/dashboards
 ```
 
 When you have added those lines, restart AppDaemon and you will be ready to go. If you navigate to the top level, e.g. ```http://192.168.1.20:5050``` in the case above, you will see a welcome page with a list of configured dashboards. If you haven't yet configured any the list will be empty.
@@ -36,30 +41,34 @@ When you have created a dashboard you can navigate to it by going to ```http://1
 
 If you are using AppDaemon just for the dasboard and not the Apps, you can disable the app engine with the following directive:
 
-```ini
-disable_apps = 1
+```yaml
+AppDaemon:
+  disable_apps: 1
 ```
 
 This will free up some CPU and memory.
 
 HADashboard pre-compiles all of the user created Dashboard for efficiency. It will detect when changes have been made to widgets, styles or dahsboards and automatically recompile. This is usually desirable as compilation can take several seconds on slower hardware for a fully loaded dashboard, however to force a recompilation every time,  use the following directive:
 
-```ini
-dash_force_compile = 1
+```yaml
+HADashboard:
+dash_force_compile: 1
 ```
 
 This will force dashboard recompilation whenever the dashboard is loaded. You can also force a recompilation by adding the parameter `recompile=1` to the dashboard URL.
 
 By default, information and errors around access to the Dashboard will go to the same place as AppDaemon's log. To split the page access out to a different file, use the `accessfile` directive, e.g.:
 
-```ini
-accessfile = /var/log/dash_access
+```yaml
+HADashboard:
+accessfile: /var/log/dash_access
 ```
 
 To force dashboard recompilation of all dashboards after a restart, use:
 
-```ini
-dash_compile_on_start = 1
+```yaml
+HADashboard:
+dash_compile_on_start: 1
 ```
 
 This should not be necessary but may on occasion be required after an upgrade to pickup changes.
@@ -570,7 +579,80 @@ The widget will detect whether or not it is showing a numeric value, and if so, 
 - `text_style`
 - `unit_style`
 
-The sensor widget will detect if the data is numeric, in which case `value_style` and `unit_style` will be applied, otherwise `text_style` will be applied and no units will be shown.
+## rss
+
+A widget to display an RSS feed.
+
+Note that the actual feeds are configured in appdaemon.yaml as follows:
+
+```yaml
+AppDaemon:
+
+  rss_feeds:
+    - feed: <feed_url>
+      target: <target_name>
+    - feed: <feed url>
+      target: <target_name>
+
+      ...
+
+  rss_update: <feed_refresh_interval>
+```
+
+- `feed_url` - fully qualified path to rss feed, e.g. `http://rss.cnn.com/rss/cnn_topstories.rss`
+- `target name` - the entity of the target RSS widget in the dashboard definition file
+- `feed_refresh_interval` - how often AppDaemon will refresh the RSS feeds
+
+There is no limit to the number of feeds you configure, and you will need to configure one RSS widget to display each feed.
+
+The RSS news feed cannot be configured if you are still using the legacy `.cfg` file type.
+
+### Mandatory Arguments:
+
+- `entity` - the name of the configured feed - this must match the `target_name` configured in the AppDaemon configuration
+- `interval` - the period between display of different items within the feed
+
+### Optional Arguments:
+
+- `title` - the title displayed on the tile
+- `title2` - a second line of title text
+- `recent` - the number of most recent stories that will be shown. If not specified, all stories in the feed will be shown.
+
+### Style Arguments:
+
+- `widget_style`
+- `title_style`
+- `title2_style`
+- `text_style`
+
+## gauge
+
+A widget to report on numeric values for sensors in Home Assistant in a gauge format.
+
+### Mandatory Arguments:
+
+- `entity` - the entity_id of the sensor to be monitored
+- `max` - maximum value to show
+- `min` - minimum value to show
+
+### Optional Arguments:
+
+- `title` - the title displayed on the tile
+- `title2` - a second line of title text
+- `units` - the unit symbol to be displayed, if not specified HAs unit will be used, specify "" for no units
+
+### Style Arguments:
+
+- `widget_style`
+- `title_style`
+- `title2_style`
+- `low_color`
+- `med_color`
+- `high_color`
+- `bgcolor`
+- `color`
+
+Note that unlike other widgets, the color settings require an actual color, rather than a CSS style.
 
 ## device_tracker
 
@@ -861,6 +943,8 @@ A widget to monitor and contol a dimmable light
 - `title2` - a second line of title text 
 - `on_attributes` - a list of supported HA attributes to set as initial values for the light.
 
+Note that `rgb_color` and `xy_color` are not specified with list syntac as in Home Assistant scenes. See below for examples.
+
 e.g.
 
 ```yaml
@@ -871,6 +955,30 @@ testlight2:
     on_attributes:
         brightness: 100
         color_temp: 250
+```
+
+or:
+
+```yaml
+testlight2:
+    widget_type: light
+    entity: light.office_2
+    title: office_2
+    on_attributes:
+        brightness: 100
+        rgb_color: 128, 34, 56
+```
+
+or:
+
+```yaml
+testlight2:
+    widget_type: light
+    entity: light.office_2
+    title: office_2
+    on_attributes:
+        brightness: 100
+        xy_color: 0.4, 0.9
 ```
 
 ### Cosmetic Arguments
@@ -930,7 +1038,7 @@ A widget to monitor and contol a climate entity
 
 - `title` - the title displayed on the tile
 - `title2` - a second line of title text 
-- `step` - the size of step in brightness when fading the slider up or down
+- `step` - the size of step in temperature when fading the slider up or down
 - `units` - the unit symbol to be displayed
 
 ### Cosmetic Arguments

@@ -1,8 +1,38 @@
 History
 =======
 
+2.0.0beta4
+----------
+
+**Features**
+
+- Migrate timer thread to async
+- Add option to turn of verification for self signed certs (contributed by [janwh](https://github.com/janwh))
+- AppDaemon configuration now uses YAML, among other things this allows arbitarily complex nested data structures in App parameters
+- Added ability to convert from old cfg file to YAML
+- AppDaemon Appd can now publish arbitary state to other Apps and the dashboard
+- Added Gauge Widget
+- Added RSS Widget
+- Add next and previous track to media player
+
+**Fixes**
+
+- Slider now works correctly after changes outside of HADashboard
+- Climate now works correctly after changes outside of HADashboard
+- Media player now works correctly after changes outside of HADashboard
+- ha.log now correctly dumps data structures
+- on_attributes for lights now correctly supports RGB and XY_COLOR
+- Fixed a bug in the scheduler to reduce clock skew messages
+
+**Breaking Changes**
+
+- The cfg file style of configuration is now deprecated although it still works for now for most features
+- Argument names passed to Apps are now case sensitive
+
 2.0.0beta3.5
 ------------
+
+**Features**
 
 - Label now accepts HTML for the value
 - IFRAME widget now allows vimeo and youtube videos to go fullscreen when clicked
@@ -20,6 +50,8 @@ History
 
 2.0.0beta3
 ----------
+
+**Features**
 
 - Added alarm widget
 - Added camera widget

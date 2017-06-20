@@ -24,11 +24,12 @@ REQUIREMENTS = [
     'aiohttp_jinja2',
     'pyyaml',
     'voluptuous',
+    'feedparser',
 ]
 
 setup(
     name='appdaemon',
-    version='2.0.0beta3.5',
+    version='2.0.0beta4',
     description="Apps for the Home Assistant home automation package.",
     long_description=README + '\n\n' + HISTORY,
     author='Andrew I Cockburn',
